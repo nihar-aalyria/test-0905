@@ -19,7 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"os"
 
 	nbictl "aalyria.com/spacetime/github/tools/nbictl"
 )
@@ -32,6 +32,8 @@ var subCmds = map[string]func(context.Context, []string) error{
 	"generate-keys": nbictl.GenerateKeys,
 	"set-context":   nbictl.SetContext,
 }
+
+var errUsage = fmt.Errorf("expected one of %s", getSubcommandNames())
 
 const (
 	linkToAuthGuide = "https://docs.spacetime.aalyria.com/authentication"
@@ -46,24 +48,46 @@ func getSubcommandNames() []string {
 	return cmdList
 }
 
-func run() error {
-	args := flag.Args()
-	if flag.NArg() == 0 {
-		return errors.New("Please specify a subcommand")
+func run(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("no command specified: %w", errUsage)
 	}
 	cmd, args := args[0], args[1:]
 	ctx := context.Background()
 
 	cmdToPerform, ok := subCmds[cmd]
 	if !ok {
-		return fmt.Errorf("invalid command: %s. must be one of %v", cmd, getSubcommandNames())
+		return fmt.Errorf("invalid command %q: %w", cmd, errUsage)
 	}
 	return cmdToPerform(ctx, args)
 }
 
 func main() {
-	flag.Parse()
-	if err := run(); err != nil {
-		log.Fatalf("fatal error: %v", err)
+	fs := flag.NewFlagSet(clientName, flag.ContinueOnError)
+	fs.Usage = func() {
+		w := fs.Output()
+		fmt.Fprintf(w, "Usage of %s:\n", clientName)
+		fmt.Fprintln(w, "")
+		fmt.Fprintf(w, "  %s -h | --help\n", clientName)
+		for subcmd := range subCmds {
+			fmt.Fprintf(w, "  %s %s [-h | --help] [options...]\n", clientName, subcmd)
+		}
+		fs.PrintDefaults()
+	}
+
+	err := fs.Parse(os.Args[1:])
+	if err == nil {
+		err = run(fs.Args())
+	}
+
+	if err != nil && errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	} else if err != nil && errors.Is(err, errUsage) {
+		fmt.Fprintf(os.Stderr, "usage error: %v\n\n", err)
+		fs.Usage()
+		os.Exit(1)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(2)
 	}
 }
