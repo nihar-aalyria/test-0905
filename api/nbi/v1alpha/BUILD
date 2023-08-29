@@ -24,11 +24,13 @@ proto_library(
     name = "nbi_proto",
     srcs = [
         "nbi.proto",
+        "signal_propagation.proto",
     ],
     deps = [
         "//api/common:common_proto",
         "//api/nbi/v1alpha/resources:nbi_resources_proto",
-        "@go_googleapis//google/api:annotations_proto",
+        "@com_google_protobuf//:duration_proto",
+        "@com_google_protobuf//:timestamp_proto",
         "@go_googleapis//google/type:interval_proto",
     ],
 )
@@ -40,7 +42,6 @@ cpp_grpc_library(
     deps = [
         "//api/common:common_cpp_proto",
         "//api/nbi/v1alpha/resources:nbi_resources_cpp_grpc",
-        "@com_google_googleapis//google/api:annotations_cc_proto",
         "@com_google_googleapis//google/rpc:code_cc_proto",
         "@com_google_googleapis//google/type:interval_cc_proto",
     ],
@@ -54,7 +55,6 @@ go_proto_library(
     deps = [
         "//api/common:common_go_proto",
         "//api/nbi/v1alpha/resources:nbi_resources_go_grpc",
-        "@go_googleapis//google/api:annotations_go_proto",
         "@go_googleapis//google/rpc:code_go_proto",
         "@go_googleapis//google/type:interval_go_proto",
     ],
@@ -78,6 +78,5 @@ python_grpc_library(
     deps = [
         "//api/common:common_python_proto",
         "//api/nbi/v1alpha/resources:nbi_resources_python_grpc",
-        "@com_google_googleapis//google/api:annotations_py_proto",
     ],
 )
