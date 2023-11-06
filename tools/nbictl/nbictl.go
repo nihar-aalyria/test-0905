@@ -21,10 +21,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urfave/cli/v2"
-	"golang.org/x/sync/errgroup"
 	intervalpb "google.golang.org/genproto/googleapis/type/interval"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -408,36 +408,50 @@ func Create(appCtx *cli.Context) error {
 		return fmt.Errorf("no files found under the given file path: %s", fileGlob)
 	}
 
-	g, ctx := errgroup.WithContext(appCtx.Context)
+	errCh := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(len(files))
 	for _, f := range files {
-		file := f
-		g.Go(func() error {
+		go func(file string) {
+			defer wg.Done()
+
 			entity := &nbipb.Entity{}
 			if err := readFromFile(file, entity); err != nil {
-				return fmt.Errorf("error while parsing create entity request for file %s: %w", file, err)
+				errCh <- fmt.Errorf("error while parsing create entity request for file %s: %w", file, err)
+				return
 			}
 			createEntityReq := &nbipb.CreateEntityRequest{Entity: entity}
 
-			res, err := client.CreateEntity(ctx, createEntityReq)
+			res, err := client.CreateEntity(appCtx.Context, createEntityReq)
 			if err != nil {
-				return fmt.Errorf("nbi.CreateEntity: %w", err)
+				errCh <- fmt.Errorf("nbi.CreateEntity for ID: %s: %w", *entity.Id, err)
+				return
 			}
 
 			protoMessage, err := prototext.MarshalOptions{Multiline: true}.Marshal(res)
 			if err != nil {
-				return fmt.Errorf("unable to convert the response into textproto format: %w", err)
+				errCh <- fmt.Errorf("unable to convert the response into textproto format for ID: %s: %w", *entity.Id, err)
+				return
 			}
 
 			fmt.Fprintln(appCtx.App.Writer, string(protoMessage))
 			fmt.Fprintf(appCtx.App.ErrWriter, "entity successfully created!:\nid: %s commit_timestamp: %d type: %v file_location: %s\n",
 				*res.Id, *res.CommitTimestamp, res.GetGroup().GetType(), file)
+		}(f)
+	}
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
 
-			return nil
-		})
+	errs := make([]error, 0)
+	for err := range errCh {
+		fmt.Fprintf(appCtx.App.ErrWriter, "unable to create an entity: %v\n", err)
+		errs = append(errs, err)
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("unable to create an entity: %w", err)
+	if len(errs) > 0 {
+		return fmt.Errorf("entity creation failed at least once")
 	}
 
 	return nil
@@ -460,46 +474,61 @@ func Update(appCtx *cli.Context) error {
 		return fmt.Errorf("no files found under the given file path: %s", fileGlob)
 	}
 
-	g, ctx := errgroup.WithContext(appCtx.Context)
+	errCh := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(len(files))
 	for _, f := range files {
-		file := f
-		g.Go(func() error {
+		go func(file string) {
+			defer wg.Done()
+
 			entity := &nbipb.Entity{}
 			if err := readFromFile(file, entity); err != nil {
-				return fmt.Errorf("error while parsing update entity for file %s: %w", file, err)
+				errCh <- fmt.Errorf("error while parsing update entity for file %s: %w", file, err)
+				return
 			}
 
 			// Ensures that the commit timestamp of the entity matches
 			// the current version in Spacetime.
-			// TODO: Add support in the NBI to update an entity
+			// TODO(nihar): Add support in the NBI to update an entity
 			// without passing a commit timestamp.
 			getEntityReq := &nbipb.GetEntityRequest{Type: entity.GetGroup().Type, Id: entity.Id}
-			getEntityRes, err := client.GetEntity(ctx, getEntityReq)
+			getEntityRes, err := client.GetEntity(appCtx.Context, getEntityReq)
 			if err != nil {
-				return fmt.Errorf("nbi.GetEntity: %w", err)
+				errCh <- fmt.Errorf("nbi.GetEntity for ID: %s: %w", *entity.Id, err)
+				return
 			}
 			entity.CommitTimestamp = getEntityRes.CommitTimestamp
 
 			updateEntityReq := &nbipb.UpdateEntityRequest{Entity: entity}
 			res, err := client.UpdateEntity(appCtx.Context, updateEntityReq)
 			if err != nil {
-				return fmt.Errorf("nbi.UpdateEntity: %w", err)
+				errCh <- fmt.Errorf("nbi.UpdateEntity for ID: %s: %w", *entity.Id, err)
+				return
 			}
 
 			protoMessage, err := prototext.MarshalOptions{Multiline: true}.Marshal(res)
 			if err != nil {
-				return fmt.Errorf("unable to convert the response into textproto format: %w", err)
+				errCh <- fmt.Errorf("unable to convert the response into textproto format: %w", err)
+				return
 			}
 
 			fmt.Fprintln(appCtx.App.Writer, string(protoMessage))
 			fmt.Fprintf(appCtx.App.ErrWriter, "update successful:\n id: %s commit_timestamp: %d type: %v file_location: %s\n", *res.Id, *res.CommitTimestamp, res.GetGroup().GetType(), file)
+		}(f)
+	}
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
 
-			return nil
-		})
+	errs := make([]error, 0)
+	for err := range errCh {
+		fmt.Fprintf(appCtx.App.ErrWriter, "unable to update an entity: %v\n", err)
+		errs = append(errs, err)
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("unable to update an entity: %w", err)
+	if len(errs) > 0 {
+		return fmt.Errorf("entity update failed at least once")
 	}
 
 	return nil
@@ -577,33 +606,48 @@ func Delete(appCtx *cli.Context) error {
 		return fmt.Errorf(`Either the "type", "id", and "timestamp" flags must be set, or the "files" flag must be set.`)
 	}
 
-	g, ctx := errgroup.WithContext(appCtx.Context)
+	errCh := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(len(reqs))
 	for _, r := range reqs {
-		req := r
-		g.Go(func() error {
+		go func(req *nbipb.DeleteEntityRequest) {
+			defer wg.Done()
 			// Ensures that the commit timestamp of the entity matches
 			// the current version in Spacetime.
-			// TODO: Add support in the NBI to delete an entity without
+			// TODO(nihar): Add support in the NBI to delete an entity without
 			// passing a commit timestamp.
 			getEntityReq := &nbipb.GetEntityRequest{Type: req.Type, Id: req.Id}
-			getEntityRes, err := client.GetEntity(ctx, getEntityReq)
+			getEntityRes, err := client.GetEntity(appCtx.Context, getEntityReq)
 			if err != nil {
-				return fmt.Errorf("nbi.GetEntity: %w", err)
+				errCh <- fmt.Errorf("nbi.GetEntity for ID: %s: %w", *req.Id, err)
+				return
 			}
 
 			req.CommitTimestamp = getEntityRes.CommitTimestamp
-			if _, err := client.DeleteEntity(ctx, req); err != nil {
-				return fmt.Errorf("nbi.DeleteEntity: %w", err)
+			if _, err := client.DeleteEntity(appCtx.Context, req); err != nil {
+				errCh <- fmt.Errorf("nbi.DeleteEntity for ID: %s: %w", *req.Id, err)
+				return
 			}
-			return nil
-		})
+
+			fmt.Fprintf(appCtx.App.ErrWriter, "entity successfully deleted!:\nid: %s\n",
+				*req.Id)
+		}(r)
+	}
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	errs := make([]error, 0)
+	for err := range errCh {
+		fmt.Fprintf(appCtx.App.ErrWriter, "unable to delete an entity: %v\n", err)
+		errs = append(errs, err)
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("deletion failed: %w", err)
+	if len(errs) > 0 {
+		return fmt.Errorf("deletion failed at least once")
 	}
 
-	fmt.Fprintln(appCtx.App.ErrWriter, "deletion successful")
 	return nil
 }
 
@@ -668,7 +712,7 @@ func GetLinkBudget(appCtx *cli.Context) error {
 			errs = append(errs, errors.New("--tx_transceiver_model_id required"))
 		}
 		if bandProfileID == "" {
-			// TODO: Output a list of valid band profile IDs.
+			// TODO(nihar): Output a list of valid band profile IDs.
 			errs = append(errs, errors.New("--band_profile_id required"))
 		}
 
