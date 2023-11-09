@@ -20,7 +20,7 @@ import json
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
 
-from py.authentication.jwt_manager import JwtManager
+from authentication.jwt_manager import JwtManager
 
 
 class SpacetimeCallCredentials(grpc.AuthMetadataPlugin):
